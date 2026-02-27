@@ -27,29 +27,8 @@ It consists of two independent workflows:
 #### 1️⃣ Real-Time Attendance Workflow
 
 ##### Flow Architecture
-Telegram Bot
-     │
-     ▼
-Telegram Trigger
-     │
-     ▼
-Set Fields (Normalize Input)
-     │
-     ▼
-Lookup Employee (Google Sheets - employee registry)
-     │
-     ▼
-Logic Engine (Data Store - State Machine)
-     │
-     ▼
-Validation (If OK)
-     ├───────────────┐
-     ▼               ▼
-Upsert Daily Report  Telegram Reject
-(Google Sheets)      (Invalid command / unauthorized)
-     │
-     ▼
-Telegram Reply
+
+![attendance-system](assets/flow001.png)
 
 
 ![attendance-system](assets/attendance-system.png)
@@ -58,19 +37,7 @@ Telegram Reply
 
 ##### Flow Architecture
 
-Cron Trigger (18:00)
-      │
-      ▼
-Set Today
-      │
-      ▼
-Read Daily Report Sheet
-      │
-      ▼
-Format Report (Deduplicate + Aggregate)
-      │
-      ▼
-Send Report to Telegram
+![daily-report](assets/flow002.png)
 
 ![daily-report](assets/daily-report.png)
 
