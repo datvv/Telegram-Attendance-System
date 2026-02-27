@@ -1,0 +1,172 @@
+{
+  "name": "Daily Report",
+  "nodes": [
+    {
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "hour": 18
+            }
+          ]
+        }
+      },
+      "id": "cb4a0a7c-1829-4e60-ab11-f63d30dc393e",
+      "name": "Daily 18:00",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {
+              "name": "today",
+              "value": "={{new Date().toISOString().slice(0,10)}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "aed63967-416a-4f0b-92bd-871e3441f845",
+      "name": "Set Today",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1J3XZaM2ib78zONM3AFzJcGfEvQIGxLL4U7pYEMgJegI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "daily_report",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "7c4d9c35-425a-48e3-9bca-8b0bd3b14fd2",
+      "name": "Read Daily Report Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        464,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "xxxx",
+          "name": "Google Sheets acc "
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const today = $node['Set Today'].json.today;\n\n// 1) Get today's rows only\nconst rows = items\n  .map(i => i.json)\n  .filter(r => String(r.date) === today);\n\n// Helpers\nconst pad2 = (n) => String(n).padStart(2, '0');\n\n// Safely convert a datetime string to timestamp (ms)\nconst safeTimeMs = (v) => {\n  if (!v) return 0;\n  const t = new Date(v).getTime();\n  return Number.isNaN(t) ? 0 : t;\n};\n\n// Determine which record is the most recent\n// Priority order:\n// 1) updated_at\n// 2) offwork_time\n// 3) row_number (fallback)\nconst getRecencyScore = (r) => {\n  const t1 = safeTimeMs(r.updated_at);\n  const t2 = safeTimeMs(r.offwork_time);\n  const rn = Number(r.row_number || 0);\n  return Math.max(t1, t2, rn); // single comparable numeric score\n};\n\n// Format seconds into \"X hours XX minutes XX seconds\"\nconst fmtHms = (totalSeconds) => {\n  totalSeconds = Math.max(0, Math.floor(Number(totalSeconds || 0)));\n  const h = Math.floor(totalSeconds / 3600);\n  const m = Math.floor((totalSeconds % 3600) / 60);\n  const s = totalSeconds % 60;\n  return `${h} hours ${pad2(m)} minutes ${pad2(s)} seconds`;\n};\n\n// Convert minutes to seconds safely\nconst minutesToSeconds = (min) => Math.max(0, Math.floor(Number(min || 0) * 60));\n\n// Calculate total session window (work_start → offwork_time)\nconst calcTotalWindowSeconds = (workStartIso, offworkIso) => {\n  if (!workStartIso || !offworkIso) return null;\n  const start = new Date(workStartIso).getTime();\n  const end = new Date(offworkIso).getTime();\n  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return null;\n  return Math.floor((end - start) / 1000);\n};\n\n// Format datetime as MM/DD HH:mm:ss\nconst formatOffwork = (iso) => {\n  if (!iso) return '—';\n  const d = new Date(iso);\n  return `${pad2(d.getMonth()+1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;\n};\n\n// 2) Deduplicate: keep only the latest record per user (telegram_id or key)\nconst latestByUser = new Map();\n\nfor (const r of rows) {\n  const userKey = String(r.telegram_id || r.key || 'unknown');\n  const existing = latestByUser.get(userKey);\n\n  // Replace only if current record is more recent\n  if (!existing || getRecencyScore(r) > getRecencyScore(existing)) {\n    latestByUser.set(userKey, r);\n  }\n}\n\n// 3) Convert map → list and sort by name\nconst uniqueRows = Array.from(latestByUser.values());\nuniqueRows.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));\n\n// 4) Build one consolidated report message\nlet lines = [];\nlines.push(`📋 Daily report ${today}`);\n\nif (uniqueRows.length === 0) {\n  lines.push(`(no data)`);\n  return [{ json: { text: lines.join('\\n') } }];\n}\n\nfor (const r of uniqueRows) {\n  const name = r.name || 'Unknown';\n  const userId = r.telegram_id || '—';\n\n  const workStart = r.work_start || '';\n  const offwork = r.offwork_time || '';\n\n  // Pure work time (minutes → seconds)\n  const pureWorkSeconds =\n    r.total_work_min !== '' && r.total_work_min != null\n      ? minutesToSeconds(r.total_work_min)\n      : null;\n\n  // Cumulative activity time (break + out)\n  const activitySeconds =\n    minutesToSeconds(r.total_break_min) + minutesToSeconds(r.total_out_min);\n\n  // Total working window duration\n  const totalWindowSeconds = calcTotalWindowSeconds(workStart, offwork);\n\n  const statusLine = offwork\n    ? `✅ Check-in Successful: Off Work - ${formatOffwork(offwork)}`\n    : `⚠️ Not offwork yet`;\n\n  lines.push(\n    `User: ${name}`,\n    ``,\n    statusLine,\n    `Note: Today's working hours have been settled`,\n    `Today's Total Work: ${totalWindowSeconds == null ? '—' : fmtHms(totalWindowSeconds)}`,\n    `Pure Work Time: ${pureWorkSeconds == null ? '—' : fmtHms(pureWorkSeconds)}`,\n    `------------------------`,\n    `Today's Cumulative Activity Time: ${fmtHms(activitySeconds)}`,\n    `` // blank line between users\n  );\n}\n\nreturn [{ json: { text: lines.join('\\n') } }];"
+      },
+      "id": "30e4b601-ae4c-421e-ab56-b0437dcb0306",
+      "name": "Format Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        688,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "-5100881236",
+        "text": "={{$json.text}}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "f4e31ddc-60cd-43e5-ba4f-9ea57cf7c9c1",
+      "name": "Send Report to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        912,
+        0
+      ],
+      "webhookId": "2ab04f14-980c-45e0-84e6-2e666b11a2ca",
+      "credentials": {
+        "telegramApi": {
+          "id": "xxx",
+          "name": "Attendance check"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Daily 18:00": {
+      "main": [
+        [
+          {
+            "node": "Set Today",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Today": {
+      "main": [
+        [
+          {
+            "node": "Read Daily Report Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Daily Report Sheet": {
+      "main": [
+        [
+          {
+            "node": "Format Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Report": {
+      "main": [
+        [
+          {
+            "node": "Send Report to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "5dfaa02b-59a8-4270-8f0e-5e7f26abd896",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "6cf74f22f9c0cf662b7331e4fddc7bc0475a0981152076ddc814dd2df31c5ad8"
+  },
+  "id": "BrO8GZyZkITSHumU",
+  "tags": []
+}

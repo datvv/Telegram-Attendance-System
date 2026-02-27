@@ -1,0 +1,490 @@
+{
+  "name": "Attendance System",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "9d9590aa-ee9b-44e1-808a-19557029c784",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1088,
+        64
+      ],
+      "webhookId": "bd9a0dc0-1bdf-4bd3-8e5c-62a8007773cb",
+      "credentials": {
+        "telegramApi": {
+          "id": "A2HWvNLXgEZ0yq1f",
+          "name": "Attendance check"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {
+              "name": "telegram_id",
+              "value": "={{$json[\"message\"][\"from\"][\"id\"]}}"
+            },
+            {
+              "name": "chat_id",
+              "value": "={{$json[\"message\"][\"chat\"][\"id\"]}}"
+            },
+            {
+              "name": "text",
+              "value": "={{$json[\"message\"][\"text\"] || \"\"}}"
+            },
+            {
+              "name": "command",
+              "value": "={{($json[\"message\"][\"text\"] || \"\").trim().split(\" \")[0]}}"
+            },
+            {
+              "name": "nowIso",
+              "value": "={{new Date().toISOString()}}"
+            },
+            {
+              "name": "today",
+              "value": "={{new Date().toISOString().slice(0,10)}}"
+            },
+            {
+              "name": "key",
+              "value": "={{new Date().toISOString().slice(0,10) + '|' + $json[\"message\"][\"from\"][\"id\"]}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "94af7406-2fd9-419f-8b8e-872d0b76d461",
+      "name": "Set Fields",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        -864,
+        64
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1BLC1o1LxJ0bKmg7LEYVlReBsxXiAM1aCJ-DDY2QdWxg",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "employees",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "4af6c132-6fb6-4b49-a609-8d77c7d78af3",
+      "name": "Lookup Employee",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        -624,
+        64
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "xxxx",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// FINAL attendance logic using n8n workflow static data as Data Store\nconst cmd = $node['Set Fields'].json.command;\nconst nowIso = $node['Set Fields'].json.nowIso;\nconst now = new Date(nowIso);\nconst today = $node['Set Fields'].json.today;\nconst telegramId = String($node['Set Fields'].json.telegram_id);\nconst key = $node['Set Fields'].json.key;\nconst emp = $items('Lookup Employee')[0]?.json;\nif (!emp || String(emp.active || 'TRUE').toUpperCase()==='FALSE') {\n  return [{json:{ok:false, reply:'⚠️ You are not registered in the system'}}];\n}\nconst name = emp.name;\nconst store = $getWorkflowStaticData('global');\nstore.attendance = store.attendance || {};\nconst s = store.attendance[key] || {\n  date: today,\n  telegram_id: telegramId,\n  name,\n  status: 'offwork',\n  workStart: null,\n  breakStart: null,\n  outStart: null,\n  breakTotalMin: 0,\n  outTotalMin: 0,\n  lastCommandAt: null,\n};\n// anti-spam rate limit 5s\nif (s.lastCommandAt) {\n  const last = new Date(s.lastCommandAt);\n  if ((now.getTime()-last.getTime()) < 5000) {\n    return [{json:{ok:false, reply:'⚠️ You acted too quickly. Try again after 5 seconds.'}}];\n  }\n}\nconst allowed = {\n  '/work': ['offwork'],\n  '/rest': ['working'],\n  '/out': ['working'],\n  '/back': ['resting','out'],\n  '/offwork': ['working','resting','out'],\n};\nif (!allowed[cmd]) {\n  return [{json:{ok:false, reply:'⚠️ Command is invalid. Use: /work /rest /out /back /offwork'}}];\n}\nif (!allowed[cmd].includes(s.status)) {\n  return [{json:{ok:false, reply:`⚠️ Current status (${s.status}) not allow to ${cmd}.`}}];\n}\nconst minsBetween = (a,b)=>Math.max(0, Math.floor((b.getTime()-a.getTime())/60000));\nlet reply = '';\nif (cmd === '/work') {\n  s.status = 'working';\n  s.workStart = nowIso;\n  s.breakStart = null;\n  s.outStart = null;\n  s.breakTotalMin = 0;\n  s.outTotalMin = 0;\n  reply = `✅ ${name} is starting to work at ` + nowIso;\n}\nif (cmd === '/rest') {\n  s.status = 'resting';\n  s.breakStart = nowIso;\n  reply = `☕ ${name} start your break at ` + nowIso;\n}\nif (cmd === '/out') {\n  s.status = 'out';\n  s.outStart = nowIso;\n  reply = `📦 ${name} Go outside to get something at ` + nowIso;\n}\nif (cmd === '/back') {\n  if (s.status === 'resting' && s.breakStart) {\n    const m = minsBetween(new Date(s.breakStart), now);\n    s.breakTotalMin += m;\n    s.breakStart = null;\n    s.status = 'working';\n    reply = `✅ ${name} back to work. ⏱ Take: ${m} minutes break`;\n  } else if (s.status === 'out' && s.outStart) {\n    const m = minsBetween(new Date(s.outStart), now);\n    s.outTotalMin += m;\n    s.outStart = null;\n    s.status = 'working';\n    reply = `✅ ${name} back to work. ⏱ Outside: ${m} minutes`;\n  } else {\n    reply = `⚠️ ${name}: No break/outing sessions are currently open.`;\n  }\n}\nlet totalWorkMin = null;\nlet offworkTime = null;\nif (cmd === '/offwork') {\n  // auto-close break/out if still open\n  if (s.status === 'resting' && s.breakStart) {\n    s.breakTotalMin += minsBetween(new Date(s.breakStart), now);\n    s.breakStart = null;\n  }\n  if (s.status === 'out' && s.outStart) {\n    s.outTotalMin += minsBetween(new Date(s.outStart), now);\n    s.outStart = null;\n  }\n  offworkTime = nowIso;\n  if (!s.workStart) {\n    return [{json:{ok:false, reply:`⚠️ ${name}: not /work today`}}];\n  }\n  const windowMin = minsBetween(new Date(s.workStart), now);\n  totalWorkMin = Math.max(0, windowMin - s.breakTotalMin - s.outTotalMin);\n  s.status = 'offwork';\n  const h = Math.floor(totalWorkMin/60);\n  const mm = totalWorkMin % 60;\n  reply = `🏁 ${name} finish work. 🧮 Working hours: ${h}h ${mm}m (☕${s.breakTotalMin}m, 📦${s.outTotalMin}m)`;\n}\ns.lastCommandAt = nowIso;\nstore.attendance[key] = s;\n\nconst hhmm = (m)=>{const h=Math.floor(m/60);const mm=m%60;return `${h}h${String(mm).padStart(2,'0')}m`;};\nreturn [{json:{\n  ok:true,\n  reply,\n  record:{\n    key,\n    date: today,\n    telegram_id: telegramId,\n    name,\n    work_start: s.workStart || '',\n    offwork_time: offworkTime || '',\n    total_break_min: s.breakTotalMin,\n    total_out_min: s.outTotalMin,\n    total_work_min: (totalWorkMin==null ? '' : totalWorkMin),\n    total_work_hhmm: (totalWorkMin==null ? '' : hhmm(totalWorkMin)),\n    status: s.status,\n    updated_at: nowIso,\n  }\n}}];\n"
+      },
+      "id": "835c17b7-7929-412c-af0a-bf1a6d049b5d",
+      "name": "Logic (Data Store)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -384,
+        64
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "5eb760b5-8cfe-4024-8c9b-47b9a0415a18",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "4d9912a7-9722-4477-897c-314f4ba5aba4",
+      "name": "If OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -192,
+        64
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1J3XZaM2ib78zONM3AFzJcGfEvQIGxLL4U7pYEMgJegI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "daily_report",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "key": "={{ $json.record.key }}",
+            "date": "={{ $json.record.date }}",
+            "telegram_id": "={{ $json.record.telegram_id }}",
+            "name": "={{ $json.record.name }}",
+            "work_start": "={{ $json.record.work_start }}",
+            "offwork_time": "={{ $json.record.offwork_time }}",
+            "total_break_min": "={{ $json.record.total_break_min }}",
+            "total_out_min": "={{ $json.record.total_out_min }}",
+            "total_work_min": "={{ $json.record.total_work_min }}",
+            "total_work_hhmm": "={{ $json.record.total_work_hhmm }}",
+            "status": "={{ $json.record.status }}",
+            "updated_at": "={{ $json.record.updated_at }}",
+            "reply": "={{ $json.reply }}",
+            "ok": "={{ $json.ok }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "key",
+              "displayName": "key",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "date",
+              "displayName": "date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "telegram_id",
+              "displayName": "telegram_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "work_start",
+              "displayName": "work_start",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "offwork_time",
+              "displayName": "offwork_time",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "total_break_min",
+              "displayName": "total_break_min",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "total_out_min",
+              "displayName": "total_out_min",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "total_work_min",
+              "displayName": "total_work_min",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "total_work_hhmm",
+              "displayName": "total_work_hhmm",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "updated_at",
+              "displayName": "updated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "ok",
+              "displayName": "ok",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "reply",
+              "displayName": "reply",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "record",
+              "displayName": "record",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "c0a9995d-50b9-40e9-b909-b0f04486acbb",
+      "name": "Upsert Daily Report",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        0,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "xxxx",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node['Set Fields'].json.chat_id}}",
+        "text": "={{$json.reply}}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "6a0c55a8-50d7-49b6-93b6-cc1abfd2359c",
+      "name": "Telegram Reply",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        208,
+        0
+      ],
+      "webhookId": "63be27a2-a1dc-40d6-8754-d3ba3178d9fc",
+      "credentials": {
+        "telegramApi": {
+          "id": "xxx",
+          "name": "Attendance check"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node['Set Fields'].json.chat_id}}",
+        "text": "={{$json.reply}}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "70a4ed04-4d42-4178-81b3-d18a2d055c3f",
+      "name": "Telegram Reject",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        0,
+        160
+      ],
+      "webhookId": "7c1dfaa0-1bb7-4581-9f7c-8859ebdf17b9",
+      "credentials": {
+        "telegramApi": {
+          "id": "xxx",
+          "name": "Attendance check"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Fields": {
+      "main": [
+        [
+          {
+            "node": "Lookup Employee",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Employee": {
+      "main": [
+        [
+          {
+            "node": "Logic (Data Store)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Logic (Data Store)": {
+      "main": [
+        [
+          {
+            "node": "If OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If OK": {
+      "main": [
+        [
+          {
+            "node": "Upsert Daily Report",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Reject",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Daily Report": {
+      "main": [
+        [
+          {
+            "node": "Telegram Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "1f697301-8da2-454a-89fb-8adcb7f7e54e",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "6cf74f22f9c0cf662b7331e4fddc7bc0475a0981152076ddc814dd2df31c5ad8"
+  },
+  "id": "abRwlk1sDP7JQVyx",
+  "tags": []
+}
