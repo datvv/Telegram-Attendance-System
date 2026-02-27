@@ -49,5 +49,8 @@ docker compose up -d
 
 #### 🖼 Demo
 
+##### Report file
+![report](assets/report-work.png)
 
+##### Report at the end of the working day
 ![attendance-group](assets/attendance-group.png)
