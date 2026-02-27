@@ -52,6 +52,8 @@ Upsert Daily Report  Telegram Reject
 Telegram Reply
 
 
+![attendance-system](assets/attendance-system.png)
+
 #### 2️⃣ Daily Summary Workflow (Scheduled)
 
 ##### Flow Architecture
@@ -70,6 +72,7 @@ Format Report (Deduplicate + Aggregate)
       ▼
 Send Report to Telegram
 
+![daily-report](assets/daily-report.png)
 
 #### 🐳 Deployment
 ```
@@ -79,8 +82,5 @@ docker compose up -d
 
 #### 🖼 Demo
 
-![attendance-system](assets/attendance-system.png)
-
-![daily-report](assets/daily-report.png)
 
 ![attendance-group](assets/attendance-group.png)
